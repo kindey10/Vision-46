@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Object & Person Detection</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.0.2/tesseract.min.js"></script>
+
+    <style>
+        body {
+            background: black;
+            font-family: 'Poppins', sans-serif;
+            text-align: center;
+            color: #F5F5F5;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            position: relative;
+        }
+
+        @keyframes gradientAnimation {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        body::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(-45deg, #05162e, #ebc623, #164b96, #071c39);
+            background-size: 300% 300%;
+            animation: gradientAnimation 10s ease infinite;
+            z-index: -1;
+        }
+
+        .container {
+            background: rgba(227, 222, 236, 0.5);
+            padding: 20px;
+            border-radius: 16px;
+            box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.1);
+            width: 90%;
+            max-width: 900px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            z-index: 1;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 10px;
+            color: #FFFFFF;
+        }
+
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 800px;
+            height: 450px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            border-radius: 8px;
+            border: 3px solid #28A4FF;
+        }
+
+        video, canvas {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 8px;
+        }
+
+        #container2 {
+            width: 100%;
+            display: flex;
+            justify-content: space-around;
+            padding: 10px;
+        }
+
+        #objects, #navigation, #textRead {
+            font-size: 16px;
+            font-weight: 500;
+            color: #161414;
+            margin-bottom: 10px;
+            flex: 1;
+            text-align: center;
+        }
+
+        #greeting {
+            font-size: 50px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #eee0e0;
+        }
+
+        input[type="text"] {
+            width: 80%;
+            padding: 8px;
+            margin-top: 10px;
+            border: 2px solid #28A4FF;
+            border-radius: 5px;
+            text-align: center;
+            font-size: 16px;
+            background: #f8f8f8;
+            color: #333;
+        }
+
+        button {
+            background: #28A4FF;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            margin: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: 0.3s;
+        }
+
+        button:hover {
+            background: #1e87d4;
+        }
+    </style>
+</head>
+<body>
+    <div id="greeting">Hello User!</div>
+    <div class="container">
+        <h1>VISION-46</h1>
+        <div class="video-container">
+            <video id="video" autoplay></video>
+            <canvas id="canvas"></canvas>
+        </div>
+        <div id="container2">
+            <div id="objects">Identified Objects: None</div>
+            <div id="navigation">Navigation: Not Set</div>
+            <div id="textRead">Text Read: None</div>
+        </div>
+        <div id="container3">
+            <input type="text" id="destination" placeholder="Spoken Destination" readonly>
+            <button onclick="startNavigation()">Start Navigation</button>
+            <button onclick="readText()">Read Text</button>
+            <button id="muteButton" onclick="toggleMute()">Mute Announcements</button>
+            <div id="staticMap"></div>
+        </div>
+    </div>
+
+    <script>
+        async function setupCamera() {
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const context = canvas.getContext('2d');
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: 640, height: 480 }
+    });
+
+    video.srcObject = stream;
+
+    return new Promise(resolve => {
+        video.onloadedmetadata = () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            resolve({ video, canvas, context });
+        };
+    });
+}
+
+        function speak(text, callback = null) {
+            const speech = new SpeechSynthesisUtterance(text);
+            speech.lang = 'en-US';
+            speech.rate = 1;
+            if (callback) {
+                speech.onend = callback;
+            }
+            window.speechSynthesis.cancel(); 
+            window.speechSynthesis.speak(speech);
+        }
+
+        function startSpeechRecognition(callback) {
+            if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
+                alert("Your browser doesn't support speech recognition. Please use Chrome or Edge.");
+                return;
+            }
+
+            const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+
+            recognition.start();
+
+            recognition.onresult = function(event) {
+                const result = event.results[0][0].transcript.toLowerCase();
+                console.log("Recognized:", result);
+                callback(result);
+            };
+
+            recognition.onerror = function(event) {
+                alert("Speech recognition error: " + event.error);
+            };
+
+            recognition.onspeechend = function() {
+                recognition.stop();
+            };
+        }
+
+        function startNavigation() {
+    speak("Where do you want to go?", () => {
+        startSpeechRecognition((destination) => {
+            document.getElementById('destination').value = destination;
+            document.getElementById('navigation').innerText = `Navigation: ${destination}`;
+
+            speak("How would you like to travel? Driving, walking, bicycling, or public transport?", () => {
+                startSpeechRecognition((mode) => {
+                    speak(`Navigating to ${destination} by ${mode}. Opening Google Maps now.`, () => {
+                        // Use 'mode' instead of 'selectedMode'
+                        window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}&travelmode=${encodeURIComponent(mode)}`, '_blank');
+                        showStaticMap(destination, mode);
+                    });
+                });
+            });
+        });
+    });
+}
+
+
+        function showStaticMap(destination, mode) {
+            const googleMapsApiKey = 'YOUR_GOOGLE_MAPS_API_KEY';
+            const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${destination}&zoom=13&size=600x300&key=${googleMapsApiKey}`;
+            document.getElementById('staticMap').innerHTML = `<img src="${staticMapUrl}" alt="Static Map">`;
+            speak("Here is a general overview of your route. For detailed turn by turn, please follow the google map that will now open. Please follow the directions on the map.");
+            window.open(`https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=${mode}`);
+        }
+
+        function showStaticMapAndGuide(destination, mode) {
+            const travelModes = {
+                "driving": "driving",
+                "car": "driving",
+                "walk": "walking",
+                "walking": "walking",
+                "bicycle": "bicycling",
+                "bike": "bicycling",
+                "cycling": "bicycling",
+                "bus": "transit",
+                "train": "transit",
+                "public transport": "transit"
+            };
+
+            const selectedMode = travelModes[mode] || "driving";
+            console.log("Static Map and Guide with mode:", selectedMode);
+
+            const googleMapsApiKey = 'YOUR_GOOGLE_MAPS_API_KEY';
+
+            const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${encodeURIComponent(destination)}&zoom=13&size=600x300&maptype=roadmap&markers=color:red%7C${encodeURIComponent(destination)}&key=${googleMapsApiKey}`;
+
+            document.getElementById('staticMap').innerHTML = `<img src="${staticMapUrl}" alt="Static Map">`;
+
+            speak("Here is a general overview of your route. For detailed turn by turn, please follow the google map that will now open. Please follow the directions on the map.");
+            window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}&travelmode=${selectedMode}`, '_blank');
+        }
+
+        let isMuted = false; // Toggle state for muting announcements
+
+function toggleMute() {
+    isMuted = !isMuted;
+    const muteButton = document.getElementById('muteButton');
+    muteButton.innerText = isMuted ? "Unmute Announcements" : "Mute Announcements";
+}
+
+async function detectObjects(video, cocoModel) {
+    const canvas = document.getElementById('canvas');
+    const context = canvas.getContext('2d');
+    const objectsDiv = document.getElementById('objects');
+
+    let lastSpokenObjects = "";
+    let lastSpokenTime = 0; 
+    const speechCooldown = 3000; 
+
+    async function detectFrame() {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const predictions = await cocoModel.detect(video);
+
+        let detectedObjects = [...new Set(predictions
+            .filter(prediction => prediction.score > 0.6)
+            .map(prediction => prediction.class)
+        )].join(", "); 
+
+        if (detectedObjects) {
+            objectsDiv.innerText = `Identified Objects: ${detectedObjects}`;
+            
+            
+            const currentTime = new Date().getTime();
+            if (!isMuted && detectedObjects !== lastSpokenObjects && (currentTime - lastSpokenTime > speechCooldown)) {
+                lastSpokenObjects = detectedObjects;
+                lastSpokenTime = currentTime;
+                speak(`Detected: ${detectedObjects}`);
+            }
+        } else {
+            objectsDiv.innerText = "Identified Objects: None";
+        }
+
+        predictions.forEach(prediction => {
+            if (prediction.score > 0.7) {
+                const [x, y, width, height] = prediction.bbox;
+                context.strokeStyle = 'red';
+                context.lineWidth = 2;
+                context.strokeRect(x, y, width, height);
+                context.font = '16px Arial';
+                context.fillStyle = 'red';
+                context.fillText(prediction.class, x, y - 5);
+            }
+        });
+
+        requestAnimationFrame(detectFrame);
+    }
+
+    detectFrame();
+}
+
+
+
+let video, canvas, context; 
+
+async function main() {
+    const videoSetup = await setupCamera();
+    video = videoSetup.video;
+    canvas = videoSetup.canvas;
+    context = videoSetup.context;
+    const cocoModel = await cocoSsd.load();
+    detectObjects(video, cocoModel);
+}
+
+let lastRecognizedText = "";
+
+async function readText() {
+    if (!context || !video) {
+        speak("Camera not initialized yet. Please wait.");
+        return;
+    }
+
+    document.getElementById('textRead').innerText = "Processing image...";
+    speak("Processing image, please wait...");
+
+    if (typeof Tesseract === "undefined") {
+        speak("Tesseract failed to load. Please refresh and try again.");
+        console.error("Tesseract is not available.");
+        return;
+    }
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    const testImage = canvas.toDataURL();
+    console.log("Captured Image Data URL: ", testImage);
+
+    if (testImage.length < 100) {
+        speak("Error: Failed to capture image.");
+        console.error("Canvas image is too small. Video feed might not be initialized.");
+        return;
+    }
+
+    try {
+        const { data } = await Tesseract.recognize(canvas, 'eng', {
+            tessedit_pageseg_mode: 6, 
+            logger: m => console.log(m)
+        });
+
+        let recognizedText = data.text.trim()
+    .replace(/[^a-zA-Z0-9\s.,'";:!?-]/g, '') 
+    .replace(/\s+/g, ' ') 
+    .trim();
+
+
+        document.getElementById('textRead').innerText = `Text Read: ${recognizedText || 'No text detected'}`;
+
+        if (recognizedText) {
+            speak(`Recognized text is: ${recognizedText}`);
+        } else {
+            speak("No text detected. Please try again.");
+        }
+    } catch (error) {
+        console.error("Tesseract error:", error);
+
+        let errorMessage = "Text recognition failed.";
+        if (error.message.includes("LoadFailed")) {
+            errorMessage = "OCR engine failed to load. Check internet connection.";
+        } else if (error.message.includes("Image Size")) {
+            errorMessage = "Captured image is too small for text detection.";
+        }
+
+        speak(errorMessage);
+        document.getElementById('textRead').innerText = errorMessage;
+    }
+}
+
+        main();
+    </script>
+</body>
+</html>
